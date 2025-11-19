@@ -144,7 +144,7 @@ if not st.session_state.selected_chat:
     st.session_state.selected_chat = st.session_state.chats[0]["id"]
 
 # Mostra il logo dell'app
-st.image("media/mida_logo_1000.png", width=350)
+st.image("media/mida_logo_1000 AI6.png", width=350)
 # st.image("media/landini_logo_web.png", width=350)
 
 # Funzioni di supporto per la gestione dei documenti
