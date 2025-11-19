@@ -1,2 +1,5 @@
 streamlit
-openai
+openai==1.59.5
+pymupdf
+pandas
+openpyxl
