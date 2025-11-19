@@ -5,10 +5,12 @@ import pandas as pd  # Per leggere file Excel
 import os
 import sys
 
+# Valore di default per il tone of voice
 DEFAULT_TONE = "Rispondi in modo sintetico, chiaro e professionale."
 
 
-def get_secret(key, env_var=None):
+def get_secret(key, env_var=None, default=None):
+    """Recupera un segreto da st.secrets o variabili d'ambiente, con valore di default opzionale."""
     env_var = env_var or key.upper()
     try:
         if key in st.secrets:
@@ -21,10 +23,14 @@ def get_secret(key, env_var=None):
     if env_value not in (None, ""):
         return env_value
 
+    if default is not None:
+        return default
+
     raise KeyError(f"Missing secret '{key}' and environment variable '{env_var}'.")
 
 
 def require_secret(key, env_var=None, friendly_name=None):
+    """Richiede un segreto obbligatorio, mostra errore se mancante."""
     try:
         return get_secret(key, env_var)
     except KeyError:
@@ -104,7 +110,8 @@ if "selected_chat" not in st.session_state:
 if "pdf_text" not in st.session_state:
     st.session_state.pdf_text = ""  # Testo estratto dal PDF
 if "tone_of_voice" not in st.session_state:
-    st.session_state.tone_of_voice = DEFAULT_TONE  # Prompt predefinito
+    # Prova a caricare il tone of voice dai secrets, altrimenti usa il default
+    st.session_state.tone_of_voice = get_secret("tone_of_voice", env_var="TONE_OF_VOICE", default=DEFAULT_TONE)
 if "show_tone_settings" not in st.session_state:
     st.session_state.show_tone_settings = False  # Controllo per mostrare il box di impostazione del tone of voice
 if "messages" not in st.session_state:
@@ -117,25 +124,6 @@ if "last_added_document" not in st.session_state:
     st.session_state.last_added_document = None
 if "last_removed_document" not in st.session_state:
     st.session_state.last_removed_document = None
-if "assistant_id" not in st.session_state:
-    # Recupera da secrets se esiste, altrimenti None
-    st.session_state.assistant_id = get_secret("assistant_id", env_var="ASSISTANT_ID") if "assistant_id" in st.secrets or os.getenv("ASSISTANT_ID") else None
-if "vector_store_id" not in st.session_state:
-    st.session_state.vector_store_id = get_secret("vector_store_id", env_var="VECTOR_STORE_ID") if "vector_store_id" in st.secrets or os.getenv("VECTOR_STORE_ID") else None
-if "thread_id" not in st.session_state:
-    st.session_state.thread_id = None  # ID del Thread per la conversazione corrente
-
-# Sincronizza il tone of voice dall'assistant esistente (se presente)
-if st.session_state.assistant_id and "tone_synced" not in st.session_state:
-    try:
-        assistant = client.beta.assistants.retrieve(st.session_state.assistant_id)
-        if assistant.instructions:
-            parts = assistant.instructions.split("documenti forniti. ", 1)
-            if len(parts) == 2:
-                st.session_state.tone_of_voice = parts[1]
-        st.session_state.tone_synced = True
-    except:
-        pass
 
 # Se non esiste alcuna conversazione, ne creo una ed apro la prima
 if not st.session_state.chats:
@@ -149,6 +137,7 @@ st.image("media/mida_logo_1000 AI6.png", width=350)
 
 # Funzioni di supporto per la gestione dei documenti
 def extract_text_from_pdf(pdf_path=None, file_bytes=None):
+    """Estrae testo da un PDF dato il percorso o i bytes."""
     if pdf_path:
         doc = fitz.open(pdf_path)
     elif file_bytes:
@@ -162,182 +151,30 @@ def extract_text_from_pdf(pdf_path=None, file_bytes=None):
         doc.close()
 
 
-# Funzioni per gestione Assistants API e Vector Store
-def get_or_create_assistant():
-    """Crea o recupera l'Assistant OpenAI con file search abilitato."""
-    if st.session_state.assistant_id:
-        try:
-            assistant = client.beta.assistants.retrieve(st.session_state.assistant_id)
-            
-            # Estrai il tone of voice dalle istruzioni esistenti dell'assistant
-            if assistant.instructions:
-                # Le istruzioni sono nel formato: "Sei un assistente... {tone_of_voice}"
-                # Estrai tutto dopo "documenti forniti. "
-                parts = assistant.instructions.split("documenti forniti. ", 1)
-                if len(parts) == 2:
-                    existing_tone = parts[1]
-                    # Aggiorna il tone of voice in sessione con quello dell'assistant
-                    st.session_state.tone_of_voice = existing_tone
-            
-            return assistant
-        except:
-            st.session_state.assistant_id = None
-    
-    # Crea nuovo assistant con il tone of voice corrente
-    assistant = client.beta.assistants.create(
-        name="MIDA Chatbot Assistant",
-        instructions=f"Sei un assistente esperto che risponde a domande basandoti sui documenti forniti. {st.session_state.tone_of_voice}",
-        model="gpt-4o",  # gpt-4o è il modello più potente attualmente disponibile
-        tools=[{"type": "file_search"}],
-    )
-    st.session_state.assistant_id = assistant.id
-    
-    # Mostra messaggio per salvare l'ID
-    st.sidebar.info(f"Nuovo Assistant creato. Aggiungi ai secrets:\nassistant_id = '{assistant.id}'")
-    
-    return assistant
-
-
-def get_or_create_vector_store():
-    """Crea o recupera il Vector Store per i documenti."""
-    if st.session_state.vector_store_id:
-        try:
-            vector_store = client.beta.vector_stores.retrieve(st.session_state.vector_store_id)
-            return vector_store
-        except:
-            st.session_state.vector_store_id = None
-    
-    # Crea nuovo vector store
-    vector_store = client.beta.vector_stores.create(
-        name="MIDA Documents"
-    )
-    st.session_state.vector_store_id = vector_store.id
-    
-    # Collega il vector store all'assistant
-    assistant = get_or_create_assistant()
-    client.beta.assistants.update(
-        assistant_id=assistant.id,
-        tool_resources={"file_search": {"vector_store_ids": [vector_store.id]}},
-    )
-    
-    # Mostra messaggio per salvare l'ID
-    st.sidebar.info(f"Nuovo Vector Store creato. Aggiungi ai secrets:\nvector_store_id = '{vector_store.id}'")
-    
-    return vector_store
-
-
-def sync_vector_store_files():
-    """Sincronizza i file nel Vector Store con i documenti in sessione."""
-    if not st.session_state.vector_store_id:
-        return
-    
-    try:
-        # Ottieni la lista dei file nel vector store
-        vs_files = client.beta.vector_stores.files.list(
-            vector_store_id=st.session_state.vector_store_id
-        )
-        
-        # Crea un set dei file_id presenti nel vector store
-        vs_file_ids = {f.id for f in vs_files.data}
-        
-        # Crea un set dei file_id nei documenti di sessione
-        session_file_ids = {doc.get("file_id") for doc in st.session_state.documents if doc.get("file_id")}
-        
-        # Rimuovi file dal vector store che non sono più in sessione
-        for file_id in vs_file_ids - session_file_ids:
-            try:
-                client.beta.vector_stores.files.delete(
-                    vector_store_id=st.session_state.vector_store_id,
-                    file_id=file_id
-                )
-            except:
-                pass
-                
-    except Exception as e:
-        pass  # Ignora errori di sincronizzazione
-
-
-def upload_file_to_vector_store(file_path=None, file_bytes=None, filename=None):
-    """Carica un file nel Vector Store OpenAI se non già presente."""
-    vector_store = get_or_create_vector_store()
-    
-    # Verifica se un file con lo stesso nome esiste già nel vector store
-    try:
-        vs_files = client.beta.vector_stores.files.list(
-            vector_store_id=vector_store.id
-        )
-        
-        # Controlla se il filename è già presente
-        for vs_file in vs_files.data:
-            try:
-                file_info = client.files.retrieve(vs_file.id)
-                if file_info.filename == filename or (file_path and file_info.filename == os.path.basename(file_path)):
-                    # File già presente, ritorna l'ID esistente
-                    return vs_file.id
-            except:
-                continue
-    except:
-        pass
-    
-    # Carica nuovo file
-    if file_path:
-        with open(file_path, "rb") as f:
-            file_obj = client.files.create(file=f, purpose="assistants")
-    elif file_bytes and filename:
-        import io
-        file_obj = client.files.create(
-            file=(filename, io.BytesIO(file_bytes)),
-            purpose="assistants"
-        )
-    else:
-        raise ValueError("Provide either file_path or (file_bytes + filename)")
-    
-    # Aggiungi il file al vector store
-    client.beta.vector_stores.files.create(
-        vector_store_id=vector_store.id,
-        file_id=file_obj.id
-    )
-    
-    return file_obj.id
-
-
 def refresh_combined_text():
-    """Mantiene pdf_text per compatibilità, ma non più usato con Assistants API."""
+    """Combina tutti i documenti caricati in un unico testo per il contesto."""
     if not st.session_state.documents:
         st.session_state.pdf_text = ""
         return
 
     combined = []
     for doc in st.session_state.documents:
-        combined.append(f"Documento: {doc['name']}\n{doc.get('text', '')}")
+        combined.append(f"=== Documento: {doc['name']} ===\n{doc.get('text', '')}")
     st.session_state.pdf_text = "\n\n".join(combined)
 
 
-def add_document(name, text, source, file_path=None, file_bytes=None):
-    """Aggiunge un documento e lo carica nel Vector Store."""
+def add_document(name, text, source):
+    """Aggiunge un documento alla lista dei documenti caricati."""
     # Verifica se il documento esiste già
     for doc in st.session_state.documents:
         if doc["name"] == name and doc["source"] == source:
             return  # Documento già caricato
     
-    # Carica il file nel Vector Store (controlla duplicati internamente)
-    try:
-        if file_path:
-            file_id = upload_file_to_vector_store(file_path=file_path, filename=name)
-        elif file_bytes:
-            file_id = upload_file_to_vector_store(file_bytes=file_bytes, filename=name)
-        else:
-            file_id = None
-    except Exception as e:
-        st.sidebar.error(f"Errore caricamento '{name}': {e}")
-        return
-    
     # Aggiungi alla lista documenti
     st.session_state.documents.append({
         "name": name,
         "text": text,
-        "source": source,
-        "file_id": file_id
+        "source": source
     })
     
     if source == "media":
@@ -347,18 +184,8 @@ def add_document(name, text, source, file_path=None, file_bytes=None):
 
 
 def remove_document(index):
-    """Rimuove un documento dalla lista e dal Vector Store."""
+    """Rimuove un documento dalla lista."""
     removed = st.session_state.documents.pop(index)
-    
-    # Rimuovi il file dal vector store
-    if removed.get("file_id") and st.session_state.vector_store_id:
-        try:
-            client.beta.vector_stores.files.delete(
-                vector_store_id=st.session_state.vector_store_id,
-                file_id=removed["file_id"]
-            )
-        except:
-            pass
     
     if removed["source"] == "media":
         st.session_state.skipped_media_files.add(removed["name"])
@@ -390,10 +217,7 @@ if os.path.isdir(media_dir):
         except Exception as exc:
             st.sidebar.warning(f"Errore caricando '{pdf_name}': {exc}")
             continue
-        add_document(pdf_name, text, source="media", file_path=pdf_path)
-
-# Sincronizza il vector store per rimuovere file obsoleti
-sync_vector_store_files()
+        add_document(pdf_name, text, source="media")
 
 # Contenitore della sidebar per gestione documenti
 st.sidebar.title("Gestione documenti")
@@ -427,7 +251,7 @@ if uploaded_file:
     if file_ext == "pdf":
         pdf_bytes = uploaded_file.read()
         text = extract_text_from_pdf(file_bytes=pdf_bytes)
-        add_document(uploaded_file.name, text, source="upload", file_bytes=pdf_bytes)
+        add_document(uploaded_file.name, text, source="upload")
         st.session_state.last_added_document = uploaded_file.name
         st.session_state.document_uploader = None
         st.rerun()
@@ -447,8 +271,6 @@ if uploaded_file:
         st.session_state.last_added_document = uploaded_file.name
         st.session_state.document_uploader = None
         st.rerun()
-
-#st.warning(sys.getsizeof(st.session_state.pdf_text), icon="⚠️")
 
 # Visualizza le chat esistenti nella sidebar
 st.sidebar.divider()
@@ -479,26 +301,8 @@ if st.session_state.show_tone_settings:
     col1, col2 = st.sidebar.columns(2)
     if col1.button("💾 Salva modifiche"):
         st.session_state.tone_of_voice = new_tone
-        # Aggiorna le istruzioni dell'assistant se esiste
-        if st.session_state.assistant_id:
-            try:
-                client.beta.assistants.update(
-                    assistant_id=st.session_state.assistant_id,
-                    instructions=f"Sei un assistente esperto che risponde a domande basandoti sui documenti forniti. {new_tone}"
-                )
-            except:
-                pass
     if col2.button("↩️ Ripristina default"):
         st.session_state.tone_of_voice = DEFAULT_TONE
-        # Aggiorna le istruzioni dell'assistant se esiste
-        if st.session_state.assistant_id:
-            try:
-                client.beta.assistants.update(
-                    assistant_id=st.session_state.assistant_id,
-                    instructions=f"Sei un assistente esperto che risponde a domande basandoti sui documenti forniti. {DEFAULT_TONE}"
-                )
-            except:
-                pass
 
 # Visualizza la chat
 st.title("🤖 Chiedi a MIDA")
@@ -513,71 +317,41 @@ else:
             st.markdown(message["content"])
 
     # Input per l'utente
-    if user_input := st.chat_input("Fai una domanda sul tuo PDF"):
+    if user_input := st.chat_input("Fai una domanda sui tuoi documenti"):
         # Aggiungi e visualizza il messaggio dell'utente
         chat_data["messages"].append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.markdown(user_input)
 
-        # Usa Assistants API con file search
-        try:
-            # Assicurati che l'assistant sia creato
-            assistant = get_or_create_assistant()
-            
-            # Crea o recupera il thread per questa conversazione
-            if not st.session_state.thread_id:
-                thread = client.beta.threads.create()
-                st.session_state.thread_id = thread.id
-            
-            # Aggiungi il messaggio dell'utente al thread
-            client.beta.threads.messages.create(
-                thread_id=st.session_state.thread_id,
-                role="user",
-                content=user_input
+        # Prepara i messaggi per la chiamata all'API
+        messages_for_api = []
+        
+        # Se ci sono documenti caricati, includi il loro contenuto come contesto
+        if st.session_state.pdf_text:
+            messages_for_api.append({
+                "role": "system",
+                "content": f"Utilizza i seguenti documenti come contesto per rispondere alle domande:\n\n{st.session_state.pdf_text}\n\n"
+            })
+        
+        # Aggiungi il tone of voice come istruzione prioritaria
+        if st.session_state.tone_of_voice:
+            messages_for_api.append({
+                "role": "system",
+                "content": f"ISTRUZIONE PRIORITARIA: {st.session_state.tone_of_voice}"
+            })
+        
+        # Aggiungi i messaggi della conversazione
+        messages_for_api.extend([{"role": m["role"], "content": m["content"]} for m in chat_data["messages"]])
+        
+        # Genera la risposta in streaming
+        with st.chat_message("assistant"):
+            response = st.write_stream(
+                client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=messages_for_api,
+                    stream=True,
+                )
             )
-            
-            # Esegui l'assistant
-            with st.chat_message("assistant"):
-                message_placeholder = st.empty()
-                full_response = ""
-                
-                import time
-                import re
-                
-                # Mostra spinner animato mentre attende il primo token
-                spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-                spinner_idx = 0
-                received_first_token = False
-                
-                # Usa streaming API per feedback immediato
-                with client.beta.threads.runs.stream(
-                    thread_id=st.session_state.thread_id,
-                    assistant_id=assistant.id,
-                ) as stream:
-                    for event in stream:
-                        # Gestisci eventi di testo in streaming
-                        if event.event == "thread.message.delta":
-                            if hasattr(event.data, 'delta') and hasattr(event.data.delta, 'content'):
-                                for content in event.data.delta.content:
-                                    if hasattr(content, 'text') and hasattr(content.text, 'value'):
-                                        received_first_token = True
-                                        full_response += content.text.value
-                                        # Rimuovi citazioni 【...】 che non sono cliccabili
-                                        display_text = re.sub(r'【[^】]*】', '', full_response)
-                                        message_placeholder.markdown(display_text)
-                        
-                        # Mostra spinner se non ha ancora ricevuto testo
-                        if not received_first_token:
-                            message_placeholder.markdown(f"{spinner_frames[spinner_idx % len(spinner_frames)]} _Elaborazione in corso..._")
-                            spinner_idx += 1
-                
-                # Pulisci la risposta finale dalle citazioni
-                full_response = re.sub(r'【[^】]*】', '', full_response)
-                message_placeholder.markdown(full_response)
-            
-            # Aggiungi la risposta alla conversazione
-            chat_data["messages"].append({"role": "assistant", "content": full_response})
-            
-        except Exception as e:
-            st.error(f"Errore nella chiamata all'API: {str(e)}")
-            chat_data["messages"].append({"role": "assistant", "content": f"Errore: {str(e)}"})
+        
+        # Aggiungi la risposta generata alla conversazione
+        chat_data["messages"].append({"role": "assistant", "content": response})
