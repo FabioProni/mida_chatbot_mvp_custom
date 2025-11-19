@@ -347,7 +347,7 @@ else:
         with st.chat_message("assistant"):
             response = st.write_stream(
                 client.chat.completions.create(
-                    model="gpt-4o",
+                    model="gpt-4.1",
                     messages=messages_for_api,
                     stream=True,
                 )
